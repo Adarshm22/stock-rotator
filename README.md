@@ -62,6 +62,8 @@ git push -u origin main
 3. Add env var `NEXT_PUBLIC_API_URL` pointing to your Railway backend URL.
 4. Deploy.
 
+`frontend/vercel.json` is included to let Vercel auto-detect Next.js.
+
 ### Railway (Backend)
 1. Create a new project and select the same GitHub repo.
 2. Set **Root Directory** to `backend`.
@@ -69,3 +71,5 @@ git push -u origin main
 4. Set start command:
 	`uvicorn main:app --host 0.0.0.0 --port $PORT`
 5. Deploy and copy the generated public URL.
+
+`backend/railway.toml` includes the same start command for Railway.
