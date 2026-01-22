@@ -2,18 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type RowPayload = {
-  index: number;
-  total: number;
-  row: Record<string, string>;
-};
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function Home() {
-  const [data, setData] = useState<RowPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
     const fetchRow = async () => {
@@ -22,7 +16,7 @@ export default function Home() {
         if (!response.ok) {
           throw new Error(`Request failed: ${response.status}`);
         }
-        const payload: RowPayload = await response.json();
+        const payload = await response.json();
         setData(payload);
         setError(null);
         setLastUpdated(new Date());
