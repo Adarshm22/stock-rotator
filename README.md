@@ -42,6 +42,9 @@ Example:
 $env:ALLOWED_ORIGINS="http://localhost:3000,https://your-vercel-app.vercel.app"
 ```
 
+The backend reads the CSV from `backend/NIFTY_historical_data.csv` by default.
+You can override with `CSV_PATH` if needed.
+
 ## API
 - `GET /row` — returns the current row and index
 - `GET /health` — simple health check

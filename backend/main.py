@@ -11,13 +11,17 @@ from typing import Dict, List
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "NIFTY_historical_data.csv"
+DEFAULT_DATA_PATHS = [
+    Path(__file__).resolve().parent / "NIFTY_historical_data.csv",
+    Path(__file__).resolve().parents[1] / "NIFTY_historical_data.csv",
+]
+DATA_PATH = Path(os.getenv("CSV_PATH", "")).expanduser() if os.getenv("CSV_PATH") else None
 UPDATE_INTERVAL_SECONDS = 60
 
 
 class CsvRowRotator:
-    def __init__(self, csv_path: Path) -> None:
-        self.csv_path = csv_path
+    def __init__(self, csv_path: Path | None) -> None:
+        self.csv_path = self._resolve_path(csv_path)
         self.headers: List[str] = []
         self.rows: List[List[str]] = []
         self.index = 0
@@ -31,6 +35,16 @@ class CsvRowRotator:
             self.rows = [row for row in reader if row]
         if not self.rows:
             raise ValueError("CSV file contains no data rows")
+
+    def _resolve_path(self, csv_path: Path | None) -> Path:
+        if csv_path and csv_path.exists():
+            return csv_path
+        for candidate in DEFAULT_DATA_PATHS:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(
+            "CSV file not found. Set CSV_PATH env or include NIFTY_historical_data.csv in backend/"
+        )
 
     def get_current(self) -> Dict[str, str]:
         with self.lock:
