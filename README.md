@@ -45,6 +45,10 @@ $env:ALLOWED_ORIGINS="http://localhost:3000,https://your-vercel-app.vercel.app"
 The backend reads the CSV from `backend/NIFTY_historical_data.csv` by default.
 You can override with `CSV_PATH` if needed.
 
+Row position persistence uses `STATE_PATH` (default `backend_state.json`).
+To persist across deployments on Railway, attach a Volume and set
+`STATE_PATH` to a path inside the volume, e.g. `/data/backend_state.json`.
+
 ## API
 - `GET /row` — returns the current row and index
 - `GET /health` — simple health check

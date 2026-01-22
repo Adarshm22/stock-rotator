@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import threading
 import time
@@ -17,6 +18,7 @@ DEFAULT_DATA_PATHS = [
 ]
 DATA_PATH = Path(os.getenv("CSV_PATH", "")).expanduser() if os.getenv("CSV_PATH") else None
 UPDATE_INTERVAL_SECONDS = 60
+DEFAULT_STATE_PATH = Path(os.getenv("STATE_PATH", "backend_state.json")).expanduser()
 
 
 class CsvRowRotator:
@@ -27,6 +29,7 @@ class CsvRowRotator:
         self.index = 0
         self.lock = threading.Lock()
         self._load_csv()
+        self._load_state()
 
     def _load_csv(self) -> None:
         with self.csv_path.open("r", encoding="utf-8-sig", newline="") as file:
@@ -46,6 +49,23 @@ class CsvRowRotator:
             "CSV file not found. Set CSV_PATH env or include NIFTY_historical_data.csv in backend/"
         )
 
+    def _load_state(self) -> None:
+        if not DEFAULT_STATE_PATH.exists():
+            return
+        try:
+            state = json.loads(DEFAULT_STATE_PATH.read_text(encoding="utf-8"))
+            index = int(state.get("index", 0))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return
+        with self.lock:
+            self.index = index % len(self.rows)
+
+    def _save_state(self) -> None:
+        DEFAULT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEFAULT_STATE_PATH.write_text(
+            json.dumps({"index": self.index}), encoding="utf-8"
+        )
+
     def get_current(self) -> Dict[str, str]:
         with self.lock:
             row = self.rows[self.index]
@@ -61,6 +81,7 @@ class CsvRowRotator:
     def advance(self) -> None:
         with self.lock:
             self.index = (self.index + 1) % len(self.rows)
+            self._save_state()
 
     def start(self) -> None:
         thread = threading.Thread(target=self._run_loop, daemon=True)
