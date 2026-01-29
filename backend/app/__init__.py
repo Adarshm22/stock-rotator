@@ -1,0 +1,1 @@
+"""Stock Rotator Backend Application."""

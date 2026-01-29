@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "Stock Rotator",
-  description: "Live CSV row viewer for NIFTY data",
+  description: "Live CSV trading assistant with Gemini alerts",
 };
 
 export default function RootLayout({ children }) {

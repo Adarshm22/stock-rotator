@@ -45,6 +45,9 @@ $env:ALLOWED_ORIGINS="http://localhost:3000,https://your-vercel-app.vercel.app"
 The backend reads the CSV from `backend/NIFTY_historical_data.csv` by default.
 You can override with `CSV_PATH` if needed.
 
+Gemini chat requires `GOOGLE_API_KEY` and uses `gemini-2.5-flash` by default.
+Optionally override the model with `GEMINI_MODEL`.
+
 Row position persistence uses `STATE_PATH` (default `backend_state.json`).
 To persist across deployments on Railway, attach a Volume and set
 `STATE_PATH` to a path inside the volume, e.g. `/data/backend_state.json`.
@@ -52,6 +55,15 @@ To persist across deployments on Railway, attach a Volume and set
 ## API
 - `GET /row` — returns the current row and index
 - `GET /health` — simple health check
+- `POST /chat` — parse a natural language trading condition against the current row
+- `GET /conditions` — list pending/triggered conditions with timestamps
+
+## Demo
+Run a quick condition evaluation check:
+```powershell
+Set-Location "c:\Users\adars\Desktop\stocks\backend"
+python condition_eval_demo.py
+```
 
 ## Deployment
 

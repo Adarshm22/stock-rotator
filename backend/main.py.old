@@ -1,0 +1,397 @@
+"""
+Stock Rotator Backend - Legacy Entry Point
+
+This file is maintained for backwards compatibility.
+The application has been restructured into the 'app' package.
+
+To run the server:
+    uvicorn app.main:app --reload --port 8000
+"""
+from app.main import app
+
+__all__ = ["app"]
+
+
+
+class ChatRequest(BaseModel):
+    message: str
+    command_time: str | None = None
+
+
+class ConditionSpec(BaseModel):
+    field: str
+    operator: str
+    value: str
+    value_type: str
+
+
+class ChatResponse(BaseModel):
+    id: str
+    status: str
+    message: str
+    command_time: str
+    parsed_time: str
+    last_checked_time: str
+    triggered_time: str | None
+    assistant_message: str
+    spec: Dict[str, str]
+
+
+
+class CsvRowRotator:
+    def __init__(self, csv_path: Path | None) -> None:
+        self.csv_path = self._resolve_path(csv_path)
+        self.headers: List[str] = []
+        self.rows: List[List[str]] = []
+        self.index = 0
+        self.lock = threading.RLock()
+        self._load_csv()
+        self._load_state()
+
+    def _load_csv(self) -> None:
+        with self.csv_path.open("r", encoding="utf-8-sig", newline="") as file:
+            reader = csv.reader(file)
+            self.headers = next(reader)
+            self.rows = [row for row in reader if row]
+        if not self.rows:
+            raise ValueError("CSV file contains no data rows")
+
+    def _resolve_path(self, csv_path: Path | None) -> Path:
+        if csv_path and csv_path.exists():
+            return csv_path
+        for candidate in DEFAULT_DATA_PATHS:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(
+            "CSV file not found. Set CSV_PATH env or include NIFTY_historical_data.csv in backend/"
+        )
+
+    def _load_state(self) -> None:
+        if not DEFAULT_STATE_PATH.exists():
+            return
+        try:
+            state = json.loads(DEFAULT_STATE_PATH.read_text(encoding="utf-8"))
+            index = int(state.get("index", 0))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return
+        with self.lock:
+            self.index = index % len(self.rows)
+
+    def _save_state(self) -> None:
+        DEFAULT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEFAULT_STATE_PATH.write_text(
+            json.dumps({"index": self.index}), encoding="utf-8"
+        )
+
+    def get_current(self) -> Dict[str, str]:
+        with self.lock:
+            row = self.rows[self.index]
+            return dict(zip(self.headers, row))
+
+    def get_index(self) -> int:
+        with self.lock:
+            return self.index
+
+    def get_total(self) -> int:
+        return len(self.rows)
+
+    def advance(self) -> None:
+        with self.lock:
+            self.index = (self.index + 1) % len(self.rows)
+            self._save_state()
+            current_row = dict(zip(self.headers, self.rows[self.index]))
+            current_index = self.index
+        evaluate_pending_conditions(current_row, current_index)
+
+    def start(self) -> None:
+        thread = threading.Thread(target=self._run_loop, daemon=True)
+        thread.start()
+
+    def _run_loop(self) -> None:
+        while True:
+            time.sleep(UPDATE_INTERVAL_SECONDS)
+            self.advance()
+
+
+rotator = CsvRowRotator(DATA_PATH)
+conditions_lock = threading.Lock()
+conditions: Dict[str, Dict[str, object]] = {}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _get_gemini_client():
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is not set")
+    if genai is None:
+        raise HTTPException(
+            status_code=500,
+            detail="google-genai is not installed. Add it to requirements.txt",
+        )
+    return genai.Client(api_key=api_key)
+
+
+def _parse_number(value: str) -> float | None:
+    try:
+        cleaned = value.replace(",", "").strip()
+        return float(cleaned)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _evaluate_condition(row: Dict[str, str], spec: Dict[str, str]) -> bool:
+    field = spec.get("field", "")
+    operator = spec.get("operator", "")
+    value = spec.get("value", "")
+    value_type = spec.get("value_type", "string")
+
+    if not field or field not in row:
+        return False
+
+    row_value = row[field]
+    if value_type == "number":
+        row_number = _parse_number(row_value)
+        target_number = _parse_number(value)
+        if row_number is None or target_number is None:
+            return False
+        left = row_number
+        right = target_number
+    else:
+        left = str(row_value)
+        right = str(value)
+
+    if operator == "==":
+        return left == right
+    if operator == "!=":
+        return left != right
+    if operator == ">":
+        return left > right
+    if operator == ">=":
+        return left >= right
+    if operator == "<":
+        return left < right
+    if operator == "<=":
+        return left <= right
+    if operator == "contains":
+        return right.lower() in left.lower()
+    if operator == "starts_with":
+        return left.lower().startswith(right.lower())
+    if operator == "ends_with":
+        return left.lower().endswith(right.lower())
+    return False
+
+
+def _parse_condition_with_gemini(message: str, row: Dict[str, str]) -> Dict[str, object]:
+    import signal
+    
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Gemini API request timed out")
+    
+    try:
+        client = _get_gemini_client()
+        prompt = (
+            "You are a trading assistant. The user provides a natural language command. "
+            "Use the provided CSV row to map fields accurately. "
+            "Return JSON with: assistant_message (string), spec (object) where spec includes "
+            "field (string), operator (one of ==, !=, >, >=, <, <=, contains, starts_with, ends_with), "
+            "value (string), value_type (number|string). \n\n"
+            f"User command: {message}\n\n"
+            f"CSV row fields and values: {json.dumps(row, ensure_ascii=False)}\n\n"
+            "Respond with JSON only."
+        )
+
+        print(f"[GEMINI] Sending request to {GEMINI_MODEL}...")
+        start_time = time.time()
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+            ),
+        )
+        elapsed = time.time() - start_time
+        print(f"[GEMINI] Response received in {elapsed:.2f}s")
+
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            print(f"Gemini response parsing error: {exc}")
+            print(f"Response text: {response.text}")
+            raise HTTPException(status_code=502, detail="Invalid JSON from Gemini") from exc
+
+        spec = data.get("spec", {})
+        if not isinstance(spec, dict):
+            raise HTTPException(status_code=400, detail="Gemini response missing spec")
+        return {
+            "assistant_message": data.get("assistant_message", "Condition parsed."),
+            "spec": {
+                "field": str(spec.get("field", "")),
+                "operator": str(spec.get("operator", "")),
+                "value": str(spec.get("value", "")),
+                "value_type": str(spec.get("value_type", "string")),
+            },
+        }
+    except Exception as exc:
+        print(f"Error in _parse_condition_with_gemini: {exc}")
+        print(f"Exception type: {type(exc).__name__}")
+        raise
+
+
+def evaluate_pending_conditions(row: Dict[str, str], index: int) -> None:
+    now = _now_iso()
+    with conditions_lock:
+        for condition in conditions.values():
+            if condition["status"] != "pending":
+                continue
+            condition["last_checked_time"] = now
+            if _evaluate_condition(row, condition["spec"]):
+                condition["status"] = "triggered"
+                condition["triggered_time"] = now
+                condition["matched_row_index"] = index
+                condition["matched_row"] = row
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    rotator.start()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    # Include common dev ports by default
+    "http://localhost:3000,http://localhost:3001",
+)
+allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+# Always allow common localhost origins for development, even when env overrides them
+dev_origins = [
+    "http://localhost:3000",
+    "https://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://127.0.0.1:3000",
+]
+for origin in dev_origins:
+    if origin not in allowed_origins:
+        allowed_origins.append(origin)
+
+allow_credentials = "*" not in allowed_origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
+@app.get("/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/row")
+def get_row() -> Dict[str, object]:
+    return {
+        "index": rotator.get_index(),
+        "total": rotator.get_total(),
+        "row": rotator.get_current(),
+    }
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    print(f"[CHAT] Received request: {request.message[:50]}...")
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    # Get row and index atomically to avoid race condition
+    with rotator.lock:
+        row = rotator.get_current()
+        current_index = rotator.get_index()
+    
+    print(f"[CHAT] Calling Gemini API...")
+    try:
+        parsed = _parse_condition_with_gemini(message, row)
+        print(f"[CHAT] Gemini responded successfully")
+    except Exception as e:
+        print(f"[CHAT] Gemini error: {e}")
+        raise
+    now = _now_iso()
+    command_time = request.command_time or now
+    condition_id = str(uuid4())
+    spec = parsed["spec"]
+
+    status = "pending"
+    triggered_time = None
+    matched_row = None
+    matched_row_index = None
+    last_checked_time = now
+
+    if _evaluate_condition(row, spec):
+        status = "triggered"
+        triggered_time = now
+        matched_row = row
+        matched_row_index = current_index
+
+    condition = {
+        "id": condition_id,
+        "message": message,
+        "assistant_message": parsed["assistant_message"],
+        "spec": spec,
+        "status": status,
+        "command_time": command_time,
+        "parsed_time": now,
+        "last_checked_time": last_checked_time,
+        "triggered_time": triggered_time,
+        "matched_row_index": matched_row_index,
+        "matched_row": matched_row,
+    }
+
+    with conditions_lock:
+        conditions[condition_id] = condition
+
+    return ChatResponse(
+        id=condition_id,
+        status=status,
+        message=message,
+        command_time=command_time,
+        parsed_time=now,
+        last_checked_time=last_checked_time,
+        triggered_time=triggered_time,
+        assistant_message=parsed["assistant_message"],
+        spec=spec,
+    )
+
+
+@app.get("/conditions")
+def list_conditions() -> Dict[str, List[Dict[str, object]]]:
+    with conditions_lock:
+        items = sorted(
+            conditions.values(), key=lambda item: item["parsed_time"], reverse=True
+        )
+        payload = [
+            {
+                "id": item["id"],
+                "message": item["message"],
+                "assistant_message": item["assistant_message"],
+                "spec": item["spec"],
+                "status": item["status"],
+                "command_time": item["command_time"],
+                "parsed_time": item["parsed_time"],
+                "last_checked_time": item["last_checked_time"],
+                "triggered_time": item["triggered_time"],
+                "matched_row_index": item["matched_row_index"],
+            }
+            for item in items
+        ]
+    return {"conditions": payload}
