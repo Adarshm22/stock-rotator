@@ -1,6 +1,6 @@
 # NIFTY CSV Rotator
 
-A simple Next.js frontend with a Python FastAPI backend. The backend reads `NIFTY_historical_data.csv` and serves a single row, rotating to the next row every 60 seconds. The frontend refreshes every minute to display the next row.
+A simple Next.js frontend with a Python FastAPI backend. The backend reads `NIFTY_historical_data.csv` and serves a single row, rotating to the next row every 60 seconds.
 
 ## Project Structure
 - `frontend/` — Next.js app
